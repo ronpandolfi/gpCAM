@@ -5,6 +5,9 @@ import uuid
 
 import numpy as np
 
+def check_dim(array, ndim):
+    return np.ndim(array) == ndim
+
 
 class gpData:
     """
@@ -181,22 +184,20 @@ class gpData:
         return False
 
     def _nan_in_dict(self, dictionary):
-        is_nan = False
         try:
             for key in dictionary:
-                if type(dictionary[key]) is dict:
-                    is_nan = self._nan_in_dict(dictionary[key])
+                if type(dictionary[key]) is dict and self._nan_in_dict(dictionary[key]):
+                    return True
                 elif type(dictionary[key]) is float and math.isnan(dictionary[key]):
-                    is_nan = True
+                    return True
                 elif type(dictionary[key]) is np.ndarray and any(np.isnan(dictionary[key])):
-                    is_nan = True
+                    return True
                 elif type(dictionary[key]) is list and any(np.isnan(np.asarray(dictionary[key]))):
-                    is_nan = True
-                else:
-                    is_nan = False
+                    return True
         except:
             pass
-        return is_nan
+        finally:
+            return False
 
 
 ######################################################################
@@ -232,10 +233,8 @@ class fvgpData(gpData):
         """
         translates numpy arrays to the data format
         """
-        if np.ndim(x) != 2: raise Exception("'inject_arrays' called with dim(x) != 2")
-        if np.ndim(y) != 2 and y is not None: raise Exception("'inject_arrays' called with dim(y) != 2")
-        if np.ndim(v) != 2 and v is not None: raise Exception("'inject_arrays' called with dim(v) != 2")
-        if np.ndim(vp) != 3 and vp is not None: raise Exception("'inject_arrays' called with dim(vp)!= 3")
+        if not (check_dim(x, 2) and check_dim(y, 2) and check_dim(v, 2) and check_dim(vp, 3)):
+            Exception("Input data has invalid shape. The x, y, and v arrays must have ndim = 2. The vp array must have ndim = 3.")
 
         data = []
         for i in range(len(x)):
@@ -249,6 +248,7 @@ class fvgpData(gpData):
             data.append(self.npy2dataset_entry(x[i], val, var, valp))
             if info is not None: data[i].update(info[i])
         return data
+
 
     def npy2dataset_entry(self, x, y=None, v=None, vp=None):
         """
