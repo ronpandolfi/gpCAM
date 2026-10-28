@@ -91,7 +91,7 @@ skill explicitly:
     compactly-supported kernels and Dask distributed computing.
 * - **multi-task-advanced**
   - Multi-output, vector-valued, or function-valued experiments using
-    `fvGPOptimizer`.
+    `GPOptimizer` and `multi_task_mode`.
 ```
 
 ## Using the skills outside Claude Code

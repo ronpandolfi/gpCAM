@@ -3,6 +3,7 @@
 """Tests for `gpcam` package."""
 import unittest
 import numpy as np
+import pytest
 from gpcam import GPOptimizer
 from gpcam import fvGPOptimizer
 import time
@@ -90,7 +91,8 @@ def test_basic_multi_task(client):
     index_set_bounds = np.array([[0., 1.], [0., 1.]])
     hps_bounds = np.array([[0.001, 1e9], [0.001, 100], [0.001, 100]])
     hps_guess = np.ones((3))
-    gp = fvGPOptimizer(x,y, kernel_function = mt_kernel, init_hyperparameters = np.array([1.,1.,1.]))
+    gp = GPOptimizer(x,y, kernel_function = mt_kernel, init_hyperparameters = np.array([1.,1.,1.]),
+                     multi_task_mode="cartesian")
     gp.tell(x,y)
     gp.get_data()
     gp.evaluate_acquisition_function(np.array([[0.0,0.6],[0.1,0.2]]), x_out = np.array([0.,1.]))
@@ -129,7 +131,7 @@ def test_optimizers():
     result = my_gp1.optimize(func = f1, search_space =  np.array([[0,1]]), max_iter = 10)
 
 
-    my_gp2 = fvGPOptimizer()
+    my_gp2 = GPOptimizer(multi_task_mode="cartesian")
     result = my_gp2.optimize(func = f2, x_out = np.array([0,1]), search_space =  np.array([[0,1]]), max_iter = 10)
 
 def test_acq_funcs(client):
@@ -247,7 +249,8 @@ def test_expected_improvement_closed_form():
 def test_expected_improvement_multi_task_scalarization():
     """Issue #55, multi-task branch: the incumbent must use the same scalarization as
     the posterior mean (a sum over tasks), and the spread must be the std of that sum
-    -- not the sum of the per-task stds."""
+    -- not the sum of the per-task stds. The incumbent is the best task-summed posterior
+    mean at the data's input points."""
     from scipy.stats import norm
 
     x_data = np.random.uniform(size=(12, 2))
@@ -255,7 +258,7 @@ def test_expected_improvement_multi_task_scalarization():
     # is dominated by task 1 and is not comparable to a sum over tasks
     y_data = np.column_stack([np.sin(np.linalg.norm(x_data, axis=1)),
                               100. * np.cos(np.linalg.norm(x_data, axis=1))])
-    gpo = fvGPOptimizer(x_data, y_data)
+    gpo = GPOptimizer(x_data, y_data, multi_task_mode="cartesian")
     x_out = np.array([0, 1])
 
     grid = np.random.uniform(size=(25, 2))
@@ -267,7 +270,7 @@ def test_expected_improvement_multi_task_scalarization():
     m = np.sum(gpo.posterior_mean(grid, x_out=x_out)["m(x)"].reshape(len(grid), len(x_out)), axis=1)
     v = gpo.posterior_covariance(grid, x_out=x_out, variance_only=True)["v(x)"].reshape(len(grid), len(x_out))
     std = np.sqrt(np.sum(v, axis=1))
-    incumbent = np.max(np.sum(gpo.fvgp_y_data, axis=1))
+    incumbent = np.max(np.sum(gpo.posterior_mean(x_data, x_out=x_out)["m(x)"], axis=1))
     z = (m - incumbent) / (std + 1e-9)
     expected = (m - incumbent) * norm.cdf(z) + std * norm.pdf(z)
     assert np.allclose(ei, np.maximum(expected, 0.), atol=1e-12)
@@ -313,7 +316,7 @@ def test_assumed_observation_noise_matrix_valued():
     for f, exact in ((noise_vector, 2 * sig2),
                      (noise_diag_matrix, 2 * sig2),
                      (noise_correlated, 2 * sig2 + 2 * rho * sig2)):
-        gpo = fvGPOptimizer(xm, ym, noise_function=f, init_hyperparameters=np.ones(4))
+        gpo = GPOptimizer(xm, ym, noise_function=f, init_hyperparameters=np.ones(4), multi_task_mode="cartesian")
         assert np.isclose(_assumed_observation_noise(gpo, x_out), exact), f.__name__
 
     # degenerate input still yields a usable positive scalar
@@ -462,7 +465,7 @@ def test_pickle():
                  "noise_function", "noise_function_grad",
                  "prior_mean_function", "prior_mean_function_grad",
                  "_gp2Scale", "gp2Scale_batch_size", "_linalg_mode",
-                 "gradient_per_direction", "_args", "logging", "multi_task", "x_out", "gp"]:
+                 "gradient_per_direction", "_args", "logging", "_multi_task_mode", "x_out", "gp"]:
         assert cfg_equal(getattr(my_gpo, attr), getattr(my_gpo2, attr)), attr
     assert my_gpo2._dask_client is None
     # a state pickled while the option was still called ram_economy
@@ -473,13 +476,13 @@ def test_pickle():
     assert restored.gradient_per_direction is True and "ram_economy" not in restored.__dict__
 
     #TEST5
-    #multi-task (fvGPOptimizer) pickling: exercises multi_task=True and x_out
+    #multi-task pickling: exercises multi_task_mode and x_out
     x_mt = np.random.uniform(size=(10, 2))
     y_mt = np.column_stack([np.sin(x_mt[:, 0]), np.cos(x_mt[:, 1])])
-    fv = fvGPOptimizer(x_mt, y_mt, kernel_function=mt_kernel,
-                       init_hyperparameters=np.array([1., 1., 1.]))
+    fv = GPOptimizer(x_mt, y_mt, kernel_function=mt_kernel,
+                     init_hyperparameters=np.array([1., 1., 1.]), multi_task_mode="cartesian")
     fv2 = pickle.loads(pickle.dumps(fv))
-    assert fv2.multi_task is True
+    assert fv2.multi_task is True and fv2.multi_task_mode == "cartesian"
     assert np.array_equal(fv.x_out, fv2.x_out)
     assert np.all(fv.x_data == fv2.x_data)
     assert np.all(fv.y_data == fv2.y_data)
@@ -934,7 +937,7 @@ def test_unknown_acquisition_strings_are_rejected_on_both_branches():
 
     x = np.random.rand(12, dim)
     y = np.column_stack([np.sin(np.linalg.norm(x, axis=1)), np.cos(np.linalg.norm(x, axis=1))])
-    mt = fvGPOptimizer(x, y, init_hyperparameters=np.ones(3), kernel_function=mt_kernel)
+    mt = GPOptimizer(x, y, init_hyperparameters=np.ones(3), kernel_function=mt_kernel, multi_task_mode="cartesian")
     try:
         evaluate_acquisition_function(np.random.rand(3, dim), gpo=mt,
                                       acquisition_function="telekinesis", dim=dim,
@@ -1164,3 +1167,199 @@ def test_assumed_observation_noise_reads_a_diagonal_noise_matrix():
         assert np.isclose(_assumed_observation_noise(gp, None), 0.5)
     finally:
         gp.likelihood.V = original
+
+
+###########################################################################
+# Multi-task GPs in GPOptimizer (8.7): every mode against fvgp's posterior contract
+###########################################################################
+MULTI_TASK_ACQUISITION_FUNCTIONS = ["variance", "relative information entropy", "relative information entropy set",
+                                    "total correlation", "ucb", "lcb", "expected improvement",
+                                    "knowledge gradient", "noisy expected improvement"]
+
+
+def _input_kernel(x1, x2, h):
+    """An anisotropic squared exponential on the inputs."""
+    return h[0] * np.exp(-(((x1[:, None, :] - x2[None, :, :]) / h[1:3]) ** 2).sum(-1))
+
+
+def _delta_cartesian_kernel(x1, x2, h):
+    """_input_kernel on the Cartesian [x, task] points, zero between different tasks."""
+    return _input_kernel(x1[:, :-1], x2[:, :-1], h) * (x1[:, -1][:, None] == x2[:, -1][None, :])
+
+
+def _multi_task_data(seed=3):
+    rng = np.random.default_rng(seed)
+    x = rng.random((15, 2))
+    y = np.column_stack([np.sin(3 * x[:, 0]), 3. * np.cos(2 * x[:, 1]), x[:, 0] * x[:, 1]])
+    return x, y, 0.01 * (rng.random(15) + 0.5), rng.random((4, 2))
+
+
+def test_independent_acquisitions_are_those_of_a_cartesian_gp_with_a_delta_kernel():
+    """fvgp's defining identity of independent outputs -- the Cartesian GP whose kernel is zero
+    between different outputs -- carried through every multi-task acquisition function. Any
+    array read in the wrong order (point-major for task-major, a shared S for the joint)
+    breaks it."""
+    x, y, noise, xp = _multi_task_data()
+    h = np.array([1.2, 0.5, 0.7])
+    ind = GPOptimizer(x, y, h, noise_variances=noise, kernel_function=_input_kernel)
+    cart = GPOptimizer(x, y, h, noise_variances=np.tile(noise[:, None], (1, 3)),
+                       kernel_function=_delta_cartesian_kernel, multi_task_mode="cartesian")
+    assert ind.multi_task_mode == "independent" and np.array_equal(ind.x_out, cart.x_out)
+    for x_out in (None, np.array([2, 0])):
+        for acq in MULTI_TASK_ACQUISITION_FUNCTIONS:
+            a = ind.evaluate_acquisition_function(xp, x_out=x_out, acquisition_function=acq)
+            b = cart.evaluate_acquisition_function(xp, x_out=x_out, acquisition_function=acq)
+            assert a.shape == b.shape == ((1,) if acq in ("relative information entropy", "total correlation")
+                                          else (len(xp),)), acq
+            assert np.allclose(a, b, rtol=1e-6, atol=1e-10), (acq, x_out)
+
+
+def test_scalarized_blocks_follow_the_task_major_flat_layout():
+    """The lookahead acquisitions sum the structured S over the outputs; that is the
+    covariance of the task-summed objective read from S_flat with pair (i, t) at i + V t."""
+    from gpcam.surrogate_model import _scalarized_blocks
+    x, y, noise, xp = _multi_task_data()
+    for mode in ("independent", "cartesian", "kronecker"):
+        gpo = GPOptimizer(x, y, noise_variances=noise if mode != "cartesian" else np.tile(noise[:, None], (1, 3)),
+                          multi_task_mode=mode)
+        x_out = np.array([2, 0])
+        mu_ref, cov_ref, mu_cand, var_cand, cross = _scalarized_blocks(gpo, x[:5], xp, x_out)
+        stack = np.vstack([x[:5], xp])
+        P, T = len(stack), len(x_out)
+        m_flat = gpo.posterior_mean(stack, x_out=x_out)["m(x)_flat"]
+        S_flat = gpo.posterior_covariance(stack, x_out=x_out)["S_flat"]
+        A = np.zeros((P, P * T))                        # sums pair (i, t) = i + P t over t
+        for t in range(T): A[np.arange(P), np.arange(P) + P * t] = 1.
+        mu, cov = A @ m_flat, A @ S_flat @ A.T
+        assert np.allclose(np.concatenate([mu_ref, mu_cand]), mu), mode
+        assert np.allclose(cov_ref, cov[:5, :5]) and np.allclose(cross, cov[:5, 5:]), mode
+        assert np.allclose(var_cand, np.diag(cov)[5:]), mode
+
+
+def test_multi_task_acquisitions_in_every_mode():
+    """One score per point (or one per set) in every mode, finite, for all outputs by default
+    and for a subset; Kronecker has no total correlation, so ask(n > 1) uses RIE there."""
+    x, y, noise, xp = _multi_task_data()
+    for mode in ("independent", "cartesian", "kronecker"):
+        gpo = GPOptimizer(x, y, multi_task_mode=mode)
+        assert gpo.multi_task and np.array_equal(gpo.x_out, np.arange(3))
+        for x_out in (None, np.array([1])):
+            for acq in MULTI_TASK_ACQUISITION_FUNCTIONS:
+                if mode == "kronecker" and acq == "total correlation":
+                    with pytest.raises(Exception, match="Kronecker"):
+                        gpo.evaluate_acquisition_function(xp, x_out=x_out, acquisition_function=acq)
+                    continue
+                r = gpo.evaluate_acquisition_function(xp, x_out=x_out, acquisition_function=acq)
+                assert r.shape in ((1,), (len(xp),)) and np.all(np.isfinite(r)), (mode, acq)
+    with pytest.warns(UserWarning, match="'relative information entropy'"):
+        r = GPOptimizer(x, y, multi_task_mode="kronecker").ask(np.array([[0., 1.], [0., 1.]]), n=2, max_iter=2)
+    assert r["x"].shape == (2, 2)
+
+
+def test_a_two_column_y_data_scores_one_value_per_point():
+    """gpCAM < 8.7 left x_out None for a GPOptimizer with 2-d y_data, so the single-task
+    acquisitions received (V, n) arrays: 'variance' returned (V, 2), noisy EI V * n + ... values."""
+    x, y, noise, xp = _multi_task_data()
+    gpo = GPOptimizer(x, y[:, :2])
+    for acq in ("variance", "ucb", "expected improvement", "noisy expected improvement"):
+        assert gpo.evaluate_acquisition_function(xp, acquisition_function=acq).shape == (len(xp),), acq
+    # a single column is a single-task GP
+    assert GPOptimizer(x, y[:, :1]).x_out is None
+
+
+def test_expected_improvement_with_a_missing_output():
+    """The multi-task EI incumbent once summed the observations, NaN wherever an output is
+    missing ('cartesian' allows that), which made every EI value NaN."""
+    from gpcam.surrogate_model import _incumbent_task_sum
+    x, y, noise, xp = _multi_task_data()
+    y[3, 1] = np.nan
+    gpo = GPOptimizer(x, y, multi_task_mode="cartesian")
+    ei = gpo.evaluate_acquisition_function(xp, acquisition_function="expected improvement")
+    assert np.all(np.isfinite(ei)) and np.all(ei >= 0.)
+    m = gpo.posterior_mean(x, x_out=np.arange(3))["m(x)"]
+    assert np.isclose(_incumbent_task_sum(gpo, np.arange(3)), np.max(m.sum(axis=1)))
+
+
+def test_data_input_points_per_mode():
+    from gpcam.surrogate_model import _data_input_points
+    x, y, noise, xp = _multi_task_data()
+    for mode in ("independent", "cartesian", "kronecker"):
+        assert np.array_equal(_data_input_points(GPOptimizer(x, y, multi_task_mode=mode)), x), mode
+    words = ["a", "bb", "ccc", "dddd"]
+    gpo = GPOptimizer(words, np.column_stack([np.arange(4.), np.arange(4.) ** 2]), init_hyperparameters=np.ones(1),
+                      kernel_function=_word_task_kernel, multi_task_mode="cartesian")
+    assert _data_input_points(gpo) == words + words
+    ei = gpo.evaluate_acquisition_function(["ee", "a"], acquisition_function="expected improvement")
+    assert ei.shape == (2,) and np.all(np.isfinite(ei))
+
+
+def _word_task_kernel(x1, x2, hps):
+    """A kernel on [word, task] pairs: words by length, tasks equal or not."""
+    l1 = np.array([len(p[0]) for p in x1], dtype=float)
+    l2 = np.array([len(p[0]) for p in x2], dtype=float)
+    t1 = np.array([p[1] for p in x1])
+    t2 = np.array([p[1] for p in x2])
+    return hps[0] * np.exp(-(l1[:, None] - l2[None, :]) ** 2) * (0.5 + 0.5 * (t1[:, None] == t2[None, :]))
+
+
+def test_fvGPOptimizer_is_a_deprecated_cartesian_GPOptimizer():
+    x, y, noise, xp = _multi_task_data()
+    with pytest.warns(FutureWarning, match="multi_task_mode='cartesian'"):
+        old = fvGPOptimizer(x, y, init_hyperparameters=np.ones(4))
+    new = GPOptimizer(x, y, init_hyperparameters=np.ones(4), multi_task_mode="cartesian")
+    assert isinstance(old, GPOptimizer) and old.multi_task_mode == "cartesian"
+    for acq in ("variance", "expected improvement"):
+        assert np.array_equal(old.evaluate_acquisition_function(xp, acquisition_function=acq),
+                              new.evaluate_acquisition_function(xp, acquisition_function=acq))
+    # without data, the mode waits for tell()
+    with pytest.warns(FutureWarning):
+        lazy = fvGPOptimizer()
+    assert lazy.multi_task_mode is None and not lazy.multi_task
+    lazy.tell(x, y)
+    assert lazy.multi_task_mode == "cartesian"
+
+
+def test_get_data_returns_the_stored_data_in_every_mode():
+    x, y, noise, xp = _multi_task_data()
+    for mode, shapes in (("independent", ((15, 2), (15, 3), (15,))), ("cartesian", ((45, 3), (45, 1), (45,))),
+                         ("kronecker", ((15, 2), (15, 3), (15,)))):
+        d = GPOptimizer(x, y, multi_task_mode=mode).get_data()
+        assert d["multi-task mode"] == mode
+        assert (np.shape(d["x data"]), np.shape(d["y data"]), np.shape(d["measurement variances"])) == shapes, mode
+        assert "transformed x data" not in d
+    assert GPOptimizer(x, y[:, 0]).get_data()["multi-task mode"] is None
+
+
+def test_an_uninitialized_optimizer_pickled_before_8_7_keeps_its_multi_task_class():
+    """gpCAM < 8.7 stored multi_task=True for an fvGPOptimizer; restored before tell(), it
+    has to build the Cartesian GP it was."""
+    x, y, noise, xp = _multi_task_data()
+    for old, mode in ((True, "cartesian"), (False, "independent")):
+        state = GPOptimizer().__getstate__()
+        del state["_multi_task_mode"]
+        state["multi_task"] = old
+        restored = GPOptimizer.__new__(GPOptimizer)
+        restored.__setstate__(state)
+        assert "multi_task" not in restored.__dict__
+        restored.tell(x, y)
+        assert restored.multi_task_mode == mode
+
+
+def test_evaluate_posterior_of_a_multi_task_gp():
+    x, y, noise, xp = _multi_task_data()
+    gpo = GPOptimizer(x, y)
+    r = gpo.evaluate_posterior(xp, return_samples=True, n_samples=50)
+    assert r["mean"].shape == r["lower"].shape == (len(xp), 3)
+    assert r["samples"].shape == (len(xp), 3, 50)
+    assert gpo.evaluate_posterior(xp, x_out=np.array([1]))["mean"].shape == (len(xp), 1)
+
+
+def test_optimize_a_vector_valued_function():
+    def f(x):
+        # one point (D) for the start design, (1, D) inside the loop
+        x = np.asarray(x)
+        y = np.stack([np.sin(5. * x[..., 0]), np.cos(3. * x[..., 0])], axis=-1)
+        return y, np.full(y.shape[:-1], 0.01)
+    gpo = GPOptimizer()
+    gpo.optimize(func=f, search_space=np.array([[0., 1.]]), max_iter=2, training_method="local")
+    assert gpo.multi_task_mode == "independent" and gpo.y_data.shape == (12, 2)

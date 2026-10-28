@@ -10,6 +10,16 @@ claude-skills.md
 
 # gpCAM
 
+:::{note}
+**New in gpCAM 8.7: `GPOptimizer` handles multi-task GPs.** Give it `y_data` with several
+columns, one per output, and choose how the outputs are modeled with `multi_task_mode`:
+`'independent'` (the default), `'cartesian'` (full multi-task learning over input × output
+space), or `'kronecker'` (a separable kernel on a full grid, for very many outputs).
+`fvGPOptimizer` is deprecated: `GPOptimizer(..., multi_task_mode='cartesian')` is its exact
+replacement. Kernels, means and noise functions written for `[x, task]` points need
+`'cartesian'`. See the [API overview](api/overview.md) and [HISTORY](https://github.com/lbl-camera/gpCAM/blob/master/HISTORY.rst).
+:::
+
 
 ```{div} centered-heading
 Decision-Making under Uncertainty, HPC Uncertainty Quantification, Autonomous Data Acquisition, and Bayesian Optimization.

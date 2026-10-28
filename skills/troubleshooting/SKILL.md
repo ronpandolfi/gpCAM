@@ -3,7 +3,7 @@ name: troubleshooting
 description: Use when a gpCAM script crashes or misbehaves — Cholesky/non-positive-definite errors, singular covariance, hyperparameter bounds mismatches, NaNs, kernel signature errors, Dask hangs, pickling failures, or an ask/tell loop that keeps picking the same point. Maps the actual error text to the cause and the fix.
 gpcam_version: "8.6.x"
 fvgp_version: "4.9.1"
-last_verified: "2026-10-14 (fvgp 4.9.1)"
+last_verified: "2026-10-14 (fvgp 4.9.1); multi-task note updated for gpCAM 8.7.0 on 2026-10-28"
 ---
 
 # Skill: Troubleshooting gpCAM
@@ -149,7 +149,8 @@ if ok.any():
     gpo.tell(x_new[ok], y_new[ok])
 ```
 
-**Exception — multi-task.** For `fvGPOptimizer`, `NaN` in `y_data` is legitimate and
+**Exception — multi-task.** For `GPOptimizer(..., multi_task_mode="cartesian")` (the former
+`fvGPOptimizer`), `NaN` in `y_data` is legitimate and
 means "this task was not measured at this point". The matching `noise_variances` entry
 **must also** be `NaN`. A `NaN` in `y` with a finite noise entry is an error.
 
