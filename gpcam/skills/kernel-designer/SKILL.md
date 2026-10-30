@@ -3,7 +3,7 @@ name: kernel-designer
 description: Use when designing or composing custom kernel (covariance) functions for gpCAM that encode domain knowledge — smoothness, periodicity, symmetry, anisotropy, or non-Euclidean input spaces.
 gpcam_version: "8.4.x"
 fvgp_version: "4.8.x"
-last_verified: "2026-07-23 (gpCAM dadeb65)"
+last_verified: "2026-07-23 (gpCAM dadeb65); multi-task line updated for gpCAM 8.7.0 on 2026-10-28"
 ---
 
 # Skill: gpCAM Kernel Designer
@@ -284,7 +284,7 @@ gp.ask(candidates, n=2)
 Notes:
 - A Python `for` loop over objects is fine here (you're bottlenecked by the distance function, not numpy).
 - If the distance function is symmetric, the resulting kernel is automatically symmetric; you still need the base kernel (Matérn/SE) to make it PSD.
-- For multi-task on non-Euclidean inputs: `fvGPOptimizer(x_strings, y_multi, kernel_function=...)` works the same way.
+- For multi-task on non-Euclidean inputs: `GPOptimizer(x_strings, y_multi, kernel_function=..., multi_task_mode="cartesian")` works the same way; the kernel then receives `[x, task]` pairs (`p[0]` the object, `p[1]` the task).
 
 ### Deep Kernel (NN-warped input space)
 

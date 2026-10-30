@@ -11,6 +11,12 @@
 [![Downloads](https://static.pepy.tech/badge/gpcam/month)](https://pepy.tech/project/gpcam)
 
 > [!NOTE]
+> **New in 8.7: `GPOptimizer` handles multi-task GPs.** Pass `y_data` of shape (V, No) and
+> choose `multi_task_mode` (`'independent'`, the default, `'cartesian'` or `'kronecker'`).
+> `fvGPOptimizer` is deprecated; `GPOptimizer(..., multi_task_mode="cartesian")` replaces it
+> exactly. Requires `fvgp ~= 4.11`; see [HISTORY.rst](HISTORY.rst).
+
+> [!NOTE]
 > **Upgrading from 8.3.x?** gpCAM 8.4 targets `fvgp ~= 4.8` and renames a few
 > constructor kwargs (`gp2Scale_dask_client → dask_client`,
 > `gp2Scale_linalg_mode → linalg_mode`, `gp_rank_n_update → rank_n_update`), and
@@ -77,7 +83,7 @@ To update later, run `/plugin marketplace update gpcam`; to remove, `/plugin uni
 | **uncertainty-calibration** | Validate that the posterior's error bars are trustworthy — scoring rules (NLPD, CRPS, MSLL), coverage/calibration curves, and what to do when the model is over- or under-confident. |
 | **troubleshooting** | Map a gpCAM error message to its cause and fix — non-positive-definite covariance, bounds mismatches, NaNs, Dask hangs, pickling, and silent failures. |
 | **gp2scale-advanced** | Large-scale experiments (>10k points) using sparse kernels and Dask distributed computing. |
-| **multi-task-advanced** | Multi-output / function-valued experiments with `fvGPOptimizer`. |
+| **multi-task-advanced** | Multi-output / function-valued experiments with `GPOptimizer` and `multi_task_mode`. |
 | **transformed-optimizers-advanced** | Constrained observations: `LogGPOptimizer` for `y > 0` and `LogitGPOptimizer` for `y ∈ [0, 1]` — predictions and credible intervals stay inside the constrained range. |
 
 Once installed, the skills activate automatically when you describe an experiment design problem to Claude, or you can invoke one explicitly (e.g. _"use the experiment-designer skill to set up an adaptive XRD scan"_).

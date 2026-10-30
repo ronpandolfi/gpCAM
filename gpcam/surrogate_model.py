@@ -383,9 +383,9 @@ def evaluate_gp_acquisition_function(x, acquisition_function, gpo, x_out):
             # this exactly from the cross-task covariance at O((N*T)^2) cost.
             std = np.sqrt(np.sum(v, axis=1))
             # The incumbent must use the same scalarization as `m`: the best *task-summed*
-            # observation. `np.max(gpo.y_data)` is a single (point, task) entry and is not
+            # value. `np.max(gpo.y_data)` is a single (point, task) entry and is not
             # comparable with a sum over tasks.
-            last_best = np.max(_observed_task_sums(gpo, x_out))
+            last_best = _incumbent_task_sum(gpo, x_out)
             return _expected_improvement(m - last_best, std)
         elif acquisition_function == "knowledge gradient":
             return knowledge_gradient(x, gpo, x_out=x_out)
@@ -395,30 +395,36 @@ def evaluate_gp_acquisition_function(x, acquisition_function, gpo, x_out):
             raise Exception("No valid acquisition function string provided. Choose from ", all_acq_func)
 
 
-def _observed_task_sums(gpo, x_out):
-    """Per-data-point observations summed over the tasks named by ``x_out``.
+def _data_input_points(gpo):
+    """The input points of the data, in every multi-task mode.
 
-    This is the incumbent scalarization for multi-task ``expected improvement``: it has
-    to match how the posterior mean is scalarized, otherwise the "improvement" compares
-    a sum over tasks against something that is not one.
-
-    ``gpo.fvgp_y_data`` is the original ``(N, No)`` observation array. (``gpo.y_data``
-    is the flattened product-space vector in task-major order, so neither its ``max``
-    nor a ``reshape(-1, No)`` of it gives per-point task sums.)
-
-    ``x_out`` holds output-space coordinates; in the usual discrete-task setting these
-    are the integer task indices, so the matching columns can be selected when only a
-    subset of tasks is being asked about. For genuinely continuous (function-valued)
-    output coordinates there are no columns to select and every task is summed -- which
-    is the same thing whenever ``x_out`` is the full task set, the default.
+    This is the one place that knows how each mode stores its data: ``'independent'``
+    and ``'kronecker'`` keep the inputs as given; ``'cartesian'`` stores one row
+    ``[x, task]`` per observed (input, output) pair, task-major and with missing outputs
+    left out, so its inputs are the distinct ``x``, in the order they first appear --
+    the order of the data, whenever the first output is observed everywhere (for a
+    non-Euclidean list, the ``x`` of each pair; duplicates do no harm where this is used).
     """
-    y = np.asarray(gpo.fvgp_y_data, dtype=float)
-    idx = np.asarray(x_out)
-    if idx.ndim == 1 and np.all(np.isfinite(idx)) and np.all(idx == np.round(idx)):
-        idx = np.round(idx).astype(int)
-        if idx.min() >= 0 and idx.max() < y.shape[1]:
-            y = y[:, idx]
-    return np.sum(y, axis=1)
+    x = gpo.x_data
+    if gpo.multi_task_mode != "cartesian": return x
+    if isinstance(x, list): return [p[0] for p in x]
+    first = np.unique(x[:, :-1], axis=0, return_index=True)[1]
+    return x[np.sort(first), :-1]
+
+
+def _incumbent_task_sum(gpo, x_out):
+    """The incumbent of multi-task ``expected improvement``: the best posterior mean,
+    summed over the outputs ``x_out``, at the data's input points.
+
+    It has to match how the candidates' mean is scalarized, otherwise the "improvement"
+    compares a sum over outputs against something that is not one. Summing the
+    observations instead fails whenever an output is missing at a point (a NaN in the
+    'cartesian' mode, which made every EI value NaN), and treats noisy observations as
+    exact; the posterior mean is defined at every data point, for every output, in every
+    mode.
+    """
+    m = gpo.posterior_mean(_data_input_points(gpo), x_out=x_out)["m(x)"]
+    return float(np.max(np.sum(m, axis=1)))
 
 
 def _expected_improvement(imp, std):
@@ -462,15 +468,14 @@ def _acq_arg(gpo, key, default):
 def _reference_points(gpo, x_out, cap, rng):
     """Input-space data points used as the reference/fantasy set.
 
-    For multi-task GPs ``gpo.x_data`` lives in the product (input x task) space, so
-    the unique input points come from ``get_data()['x data']``. Capped (subsampled)
-    for scalability; the subsample is stable within one ``ask()`` because the rng is
-    seeded.
+    For multi-task GPs these are the data's input points (:func:`_data_input_points`).
+    Capped (subsampled) for scalability; the subsample is stable within one ``ask()``
+    because the rng is seeded.
     """
     if x_out is None:
         xr = np.asarray(gpo.x_data, dtype=float)
     else:
-        xr = np.asarray(gpo.get_data()["x data"], dtype=float)
+        xr = np.asarray(_data_input_points(gpo), dtype=float)
     if len(xr) > cap:
         xr = xr[rng.choice(len(xr), size=cap, replace=False)]
     return xr
@@ -487,19 +492,22 @@ def _assumed_observation_noise(gpo, x_out):
     diagonal matrix that understates the noise by exactly a factor of N.
 
     For the task-summed multi-task objective the relevant quantity is
-    ``Var(sum_t eps(x, t))``. With a full covariance that is the sum of each point's
-    (T, T) noise block, which accounts for cross-task noise correlation exactly; the
-    product-space ordering is task-major (k = point + Npts*task), as in
-    :func:`_scalarized_blocks`. With only per-observation variances available the
-    tasks have to be assumed uncorrelated, giving ``len(x_out)`` times the mean.
+    ``Var(sum_t eps(x, t))``. With a full covariance over the 'cartesian' mode's
+    (point, task) pairs that is the sum of each point's (T, T) noise block, which
+    accounts for cross-task noise correlation exactly; the ordering is task-major
+    (k = point + Npts*task). In the other modes the noise is one variance per input,
+    the same for every output and independent between outputs, and with only
+    per-observation variances the tasks have to be assumed uncorrelated: both give
+    ``len(x_out)`` times the mean.
     """
     base = None
     task_summed = False          # True once `base` is already Var(sum over tasks)
     try:
         v = np.asarray(gpo.get_data()["measurement variances"], dtype=float)
         if v.size and v.ndim == 2 and v.shape[0] == v.shape[1]:
-            T = len(x_out) if x_out is not None else 0
-            if T > 0 and v.shape[0] % T == 0:
+            # the (T, T) blocks exist only for a full 'cartesian' grid with every output asked for
+            T = len(x_out) if gpo.multi_task_mode == "cartesian" and len(x_out) == gpo.output_num else 0
+            if T > 0 and v.shape[0] == T * len(_data_input_points(gpo)):
                 # exact Var(sum_t eps) per point, averaged over the data points
                 P = v.shape[0] // T
                 blocks = v.reshape(T, P, T, P)               # [task, point, task, point]
@@ -532,18 +540,17 @@ def _scalarized_blocks(gpo, x_ref, x_cand, x_out):
     M, N = len(x_ref), len(x_cand)
     stack = np.vstack([x_ref, x_cand])
     mean = np.asarray(gpo.posterior_mean(stack, x_out=x_out)["m(x)"])
-    S_flat = np.asarray(gpo.posterior_covariance(stack, x_out=x_out)["S_flat"])
+    S = np.asarray(gpo.posterior_covariance(stack, x_out=x_out)["S"])
     if x_out is None:
         mu = mean.reshape(-1)
-        cov = S_flat
+        cov = S
     else:
-        # Flat product-space ordering is task-major (k = point + Npts*task), so the
-        # (Npts*T, Npts*T) covariance is a T x T grid of (Npts, Npts) blocks; summing
-        # the task blocks gives Cov(sum_t f(.,t), sum_t' f(.,t')). See the v.reshape(
-        # ..., order='F') convention in fvgp.posterior_covariance.
-        T, P = len(x_out), M + N
-        mu = mean.reshape(P, T).sum(axis=1)
-        cov = S_flat.reshape(T, P, T, P).sum(axis=(0, 2))
+        # fvgp's structured multi-task results: m(x) is (P, T) and S is (P, P, T, T) with
+        # S[i, j, t, u] = Cov(f(x_i, t), f(x_j, u)), in every multi-task mode, so summing
+        # the output axes gives Cov(sum_t f(., t), sum_u f(., u)) without touching the
+        # task-major order of the flat arrays.
+        mu = mean.sum(axis=1)
+        cov = S.sum(axis=(2, 3))
     cov = 0.5 * (cov + cov.T)
     mu_ref, mu_cand = mu[:M], mu[M:]
     cov_ref = cov[:M, :M]

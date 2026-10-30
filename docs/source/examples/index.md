@@ -22,6 +22,6 @@ Each can be downloaded and run locally after `pip install gpcam`.
 - **[Single-task GP](GPOptimizer_SingleTaskTest.ipynb)** — single-task regression and autonomous data acquisition
 - **[Non-Euclidean inputs](GPOptimizer_NonEuclideanInputSpaces.ipynb)** — Bayesian optimization over candidate sets (strings, graphs, materials)
 - **[gp2Scale](GPOptimizer_gp2ScaleTest.ipynb)** — large-scale sparse GP with Dask distributed computation
-- **[Multi-task GP](GPOptimizer_MultiTaskTest.ipynb)** — multi-output regression with the `fvGPOptimizer` class
+- **[Multi-task GP](GPOptimizer_MultiTaskTest.ipynb)** — multi-output regression with `GPOptimizer` and `multi_task_mode`
 - **[Function optimization](GPOptimizer_Optimization.ipynb)** — minimizing a known function with the `optimize` loop
 - **[Log and Logit GP optimizers](GPOptimizer_LogAndLogit.ipynb)** — fitting strictly-positive data with `LogGPOptimizer` and bounded `[0, 1]` data with `LogitGPOptimizer`

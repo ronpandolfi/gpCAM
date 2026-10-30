@@ -3,7 +3,7 @@ name: acquisition-functions
 description: Use when choosing or designing the acquisition function for a gpCAM experiment — deciding which built-in actually fits the scientist's goal (and confirming it with them rather than defaulting to expected improvement), or writing a custom one for exploration/exploitation balance, multi-objective targets, constrained search regions, cost-aware moves, change-mapping via gradient or radical gradient, knowledge gradient and noisy EI under observation noise, UCB/LCB, target-value, or threshold-finding criteria.
 gpcam_version: "8.4.x"
 fvgp_version: "4.8.x"
-last_verified: "2026-08-04 (gpCAM 23c886d + joint candidate-batch selection)"
+last_verified: "2026-08-04 (gpCAM 23c886d + joint candidate-batch selection); multi-task pointer updated for gpCAM 8.7.0 on 2026-10-28"
 ---
 
 # Skill: gpCAM Acquisition Functions

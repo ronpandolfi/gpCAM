@@ -11,6 +11,101 @@ Unreleased
 * New ``agent_skills`` entry point (``gpcam = "gpcam.skills"``) lets agent hosts discover the
   skills: each subfolder of the entry point's package that contains a ``SKILL.md`` is a skill.
 
+8.7.0 — 2026-10-28
+------------------
+
+Requires fvgp 4.11.1. fvgp 4.11 merged its multi-task class into ``fvgp.GP``, and gpCAM follows:
+``GPOptimizer`` now does single- and multi-task GPs. 4.11.1 hands a callable training ``method``
+the GP, as documented (4.11.0 passed fvgp's internal trainer).
+
+Deprecations
+~~~~~~~~~~~~
+
+* **``fvGPOptimizer`` is deprecated** (``FutureWarning``) and will be removed when gpCAM moves
+  to fvgp 5.0.0. It is now a ``GPOptimizer`` with ``multi_task_mode="cartesian"``:
+  ``fvGPOptimizer(x, y, ...)`` is ``GPOptimizer(x, y, ..., multi_task_mode="cartesian")``,
+  and existing code keeps running.
+
+Changes
+~~~~~~~
+
+* **One class for single- and multi-task GPs.** The shape of ``y_data`` decides: (V) or
+  (V, 1) is a single-task GP, (V, No) with No > 1 a multi-task GP, modeled as the new
+  ``GPOptimizer`` argument ``multi_task_mode`` says: ``'independent'`` (the default, as in
+  fvgp: No GPs sharing one kernel and its hyperparameters, which is what ``GPOptimizer`` did
+  with 2-d ``y_data``), ``'cartesian'`` (a single-task GP over input × output space, any
+  kernel, missing outputs allowed: the former ``fvGPOptimizer``), or ``'kronecker'`` (a
+  separable kernel on a full grid; by default a learned output covariance). Kernels, means and
+  noise functions written for ``[x, task]`` points need ``'cartesian'``. New read-only
+  properties ``multi_task_mode`` (None for a single-task GP) and, from fvgp, ``output_num``;
+  ``multi_task`` is now read-only.
+
+* **What changes for former ``fvGPOptimizer`` code:**
+
+  - a ``y_data`` with a single column is a single-task GP (it was a one-task Cartesian GP);
+  - ``get_data()`` returns the data as the GP stores it, under the same keys in every mode:
+    for ``'cartesian'``, ``"x data"`` and ``"y data"`` are the (V * No, D + 1) and (V * No, 1)
+    product-space arrays (they were the (V, D) and (V, No) arrays passed in), and the
+    ``"transformed x data"`` / ``"transformed y data"`` keys are gone. New key:
+    ``"multi-task mode"``. ``"original y data"`` is now there in every mode;
+  - ``fvgp_x_data``, ``fvgp_y_data`` and ``fvgp_noise_variances`` no longer exist (fvgp
+    4.11 keeps one copy of the data);
+  - ``isinstance(gpo, GPOptimizer)`` is True.
+
+* **``x_out``** selects outputs by index for ``'independent'`` and ``'kronecker'`` and by
+  output coordinate for ``'cartesian'``; all outputs by default, in every mode. Passing an
+  ``x_out`` to a single-task GP raises (fvgp 4.11).
+
+* **Posterior results follow fvgp 4.11's contract**, the same keys and shapes in every mode
+  (``fvgp.GP`` Notes): single-task results have no output axis; multi-task ``m(x)``, ``v(x)``
+  are (V, n), ``S`` is (V, V, n, n), flat arrays are task-major; ``variance_only=True`` gives
+  ``S = None``; the ``x_pred`` key is gone. Cartesian ``m(x)``, ``v(x)`` and ``S`` keep their
+  shapes and values.
+  ``evaluate_posterior`` returns (V, n) arrays for a multi-task GP and ``"samples"`` of shape
+  (V, n, n_samples) (were flattened point-major).
+
+* **The built-in multi-task acquisition functions work in every mode,** checked by the
+  identity that independent outputs are a Cartesian GP whose kernel is zero between outputs.
+  ``total correlation`` is not available for ``'kronecker'``; there ``ask(n > 1)`` on bounds
+  switches to ``relative information entropy`` instead. ``knowledge gradient`` and
+  ``noisy expected improvement`` read the structured ``m(x)`` and ``S``, so they no longer
+  depend on the flat arrays' order.
+
+* **Pickles.** An optimizer pickled with gpCAM < 8.7 is not reliably restored: fvgp 4.11
+  restores multi-task GPs pickled before it as single-task GPs. Rebuild it from its data.
+  An uninitialized one (pickled before ``tell()``) keeps its multi-task class.
+
+Bug fixes
+~~~~~~~~~
+
+* ``GPOptimizer`` with 2-d ``y_data`` left ``x_out`` unset, so the single-task acquisition
+  functions received (V, n) arrays: ``variance`` and ``ucb`` returned (V, n) instead of one
+  score per point, ``noisy expected improvement`` returned the wrong number of values, and
+  ``expected improvement`` raised.
+* The multi-task ``expected improvement`` incumbent summed the observations, which is NaN
+  wherever an output is missing (``'cartesian'``) and made every EI value NaN. It is now the
+  best task-summed posterior mean at the data points, in every mode.
+* ``knowledge gradient``'s noise estimate read a (V, V) noise matrix of a non-Cartesian GP as
+  (task, point) blocks whenever V was divisible by the number of outputs.
+* ``optimize()`` with a vector-valued ``func`` on an optimizer without data decided the shape
+  from ``multi_task``, which is unknown before the first ``tell()``.
+
+Changes inherited from fvgp 4.10 and 4.11
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+gpCAM overrides none of these methods; the constructor docstrings are fvgp's.
+
+* ``linalg_mode="low_rank_<r>"`` for kernels of known rank r.
+* Kronecker multi-task GPs with a coregionalization default kernel.
+* The default prior mean is each output's average.
+* The multi-output likelihood gradient averages over the outputs (it followed output 0).
+* ``train(asynchronous=True)`` defaults to ``method='local'`` (was ``mcmc``).
+* A matrix-valued noise function is deprecated (``FutureWarning``).
+* ``posterior_mean_grad``'s ``component`` is deprecated; the gradient covers every
+  requested output. ``dS/dx`` was wrong off the diagonal.
+
+See fvgp's HISTORY for the details.
+
 8.6.1 — 2026-10-14
 ------------------
 

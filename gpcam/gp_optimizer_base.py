@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 import numpy as np
 from loguru import logger
-from fvgp import fvGP
 from fvgp import GP
 from . import surrogate_model as sm
 import warnings
@@ -35,8 +34,8 @@ class GPOptimizerBase(GP):
             gradient_per_direction=False,
             cost_function=None,
             logging=False,
-            multi_task=False,
             args=None,
+            multi_task_mode="independent",
     ):
         self.cost_function = cost_function
         self.init_hyperparameters = init_hyperparameters
@@ -55,7 +54,7 @@ class GPOptimizerBase(GP):
         self.gradient_per_direction = gradient_per_direction
         self._args = args
         self.logging = logging
-        self.multi_task = multi_task
+        self._multi_task_mode = multi_task_mode
         self.x_out = None
 
         if logging is True:
@@ -97,6 +96,15 @@ class GPOptimizerBase(GP):
         else: self._args = a
 
     @property
+    def multi_task_mode(self):
+        if self.gp: return super().multi_task_mode
+        else: return None
+
+    @property
+    def multi_task(self):
+        return self.multi_task_mode is not None
+
+    @property
     def input_space_dimension(self):
         if self.gp:
             input_space_dimension = self.input_set_dim
@@ -112,8 +120,6 @@ class GPOptimizerBase(GP):
         y_prepared = self._prepare(np.asarray(y_data))
         noise_variances = self._transform_noise_variances(y_prepared, noise_variances)
         y_data = self._forward(y_prepared)
-        if self.multi_task: self.x_out = np.arange(y_data.shape[1])
-        else: self.x_out = None
 
         super().__init__(
             x_data,
@@ -133,9 +139,14 @@ class GPOptimizerBase(GP):
             gp2Scale_distribution=self.gp2Scale_distribution,
             linalg_mode=self._linalg_mode,
             gradient_per_direction=self.gradient_per_direction,
-            args=self._args
+            args=self._args,
+            multi_task_mode=self._multi_task_mode
         )
         self.gp = True
+        # all outputs by default: indices for 'independent' and 'kronecker', and fvGP's
+        # output coordinates for 'cartesian', which are the same integers
+        if self.multi_task: self.x_out = np.arange(self.output_num)
+        else: self.x_out = None
 
     def get_data(self):
         """
@@ -147,25 +158,16 @@ class GPOptimizerBase(GP):
         """
         if not self.gp: return "GP not yet initialized; tell() data!"
 
-        if not self.multi_task:
-            return {
-                "input dim": self.input_space_dimension,
-                "x data": self.x_data,
-                "y data": self.y_data,
-                "original y data": self._inverse(self.y_data),
-                "measurement variances": self.likelihood.V,
-                "hyperparameters": self.hyperparameters,
-                "cost function": self.cost_function}
-        else:
-            return {
-                "input dim": self.input_space_dimension,
-                "x data": self.fvgp_x_data,
-                "y data": self.fvgp_y_data,
-                "transformed x data": self.x_data,
-                "transformed y data": self.y_data,
-                "measurement variances": self.likelihood.V,
-                "hyperparameters": self.hyperparameters,
-                "cost function": self.cost_function}
+        # the data as the GP stores it, in every multi-task mode
+        return {
+            "input dim": self.input_space_dimension,
+            "multi-task mode": self.multi_task_mode,
+            "x data": self.x_data,
+            "y data": self.y_data,
+            "original y data": self._inverse(self.y_data),
+            "measurement variances": self.likelihood.V,
+            "hyperparameters": self.hyperparameters,
+            "cost function": self.cost_function}
 
         ############################################################################
 
@@ -197,12 +199,13 @@ class GPOptimizerBase(GP):
         Default: sample the GP-space Gaussian and push through :py:meth:`_inverse`.
         Identity transform -> Gaussian samples; Log -> lognormal; Logit -> logistic-normal.
         Subclasses with an analytic sampler may override.
-        Returns an array of shape ``(n_points, n_samples)``.
+        Returns an array of shape ``mu.shape + (n_samples,)``: ``(n_points, n_samples)``, or
+        ``(n_points, n_outputs, n_samples)`` for a multi-task GP.
         """
-        mu = np.asarray(mu).reshape(-1)
-        sd = np.sqrt(np.asarray(var).reshape(-1))
-        z = np.random.normal(loc=mu[:, None], scale=sd[:, None],
-                             size=(mu.shape[0], int(n_samples)))
+        mu = np.asarray(mu)
+        sd = np.sqrt(np.asarray(var))
+        z = np.random.normal(loc=mu[..., None], scale=sd[..., None],
+                             size=mu.shape + (int(n_samples),))
         return self._inverse(z)
 
     def _transform_noise_variances(self, y_prepared, noise_variances):
@@ -227,7 +230,9 @@ class GPOptimizerBase(GP):
         x : np.ndarray | list
             Points at which to evaluate the posterior. np.ndarray of shape (V x D) or list.
         x_out : np.ndarray, optional
-            Output-space positions; only used in the multi-task setting.
+            The requested outputs of a multi-task GP, all by default: output indices for
+            'independent' and 'kronecker', output coordinates for 'cartesian'. Must be None for
+            a single-task GP.
         level : float, optional
             Central credible-interval mass in (0, 1). The default is 0.95.
         return_samples : bool, optional
@@ -239,10 +244,11 @@ class GPOptimizerBase(GP):
         Return
         ------
         Posterior summary : dict
-            Keys `"median"`, `"mean"`, `"std"`, `"lower"`, `"upper"`, `"level"`. When
+            Keys `"median"`, `"mean"`, `"std"`, `"lower"`, `"upper"`, `"level"`, each of
+            shape (n_points), or (n_points, n_outputs) for a multi-task GP. When
             ``return_samples=True``, an additional `"samples"` array of shape
-            ``(n_points, n_samples)`` is included, where ``samples[i]`` are the draws at
-            the i-th input point.
+            ``(n_points, n_samples)``, or ``(n_points, n_outputs, n_samples)``, is included,
+            where ``samples[i]`` are the draws at the i-th input point.
         """
         assert self.gp, "GP not yet initialized; tell() data!"
         if x_out is None: x_out = self.x_out
@@ -271,7 +277,9 @@ class GPOptimizerBase(GP):
         x : np.ndarray | list
             Point positions at which the acquisition function is evaluated. np.ndarray of shape (N x D) or list.
         x_out : np.ndarray, optional
-            Point positions in the output space.
+            The requested outputs of a multi-task GP, all by default: output indices for
+            'independent' and 'kronecker', output coordinates for 'cartesian'. Must be None for
+            a single-task GP.
         acquisition_function : Callable, optional
             Acquisition function to execute. Callable with inputs (x,gpcam.gp_optimizer.GPOptimizer),
             where x is a V x D array of input x_data. The return value is a 1d array of length V.
@@ -316,14 +324,15 @@ class GPOptimizerBase(GP):
             Point positions to be communicated to the Gaussian Process; either a np.ndarray of shape (U x D)
             or a list.
         y : np.ndarray
-            The values of the data points. Shape (V,No).
-            It is possible that not every entry in `x_new`
-            has all corresponding tasks available. In that case `y_new` may contain np.nan entries.
+            The values of the data points, in the format the constructor took: shape (V), or
+            (V, No) for a multi-task GP.
+            For ``multi_task_mode='cartesian'`` not every entry in `x`
+            needs all outputs; missing ones are np.nan.
         noise_variances : np.ndarray, optional
             An numpy array or list defining the uncertainties/noise in the
-            `y_data` in form of a point-wise variance. Shape (V, No).
-            If `y_data` has np.nan entries, the corresponding
-            `noise_variances` have to be np.nan.
+            `y` in form of a point-wise variance. Shape (V), one variance per point for
+            ``'independent'`` and ``'kronecker'`` as well; (V, No) for ``'cartesian'``,
+            np.nan where `y` is np.nan.
             Note: if no noise_variances are provided here, the noise_function
             callable will be used; if the callable is not provided, the noise variances
             will be set to `abs(np.mean(y_data)) / 100.0`. If
@@ -401,8 +410,9 @@ class GPOptimizerBase(GP):
             criteria of this kind are approximately submodular, for which greedy selection
             is a standard and well-founded choice.
         x_out : np.ndarray, optional
-            The position indicating where in the output space the acquisition function should be evaluated.
-            This array is of shape (No). This is only use the multi-task setting.
+            The requested outputs of a multi-task GP, all by default: output indices for
+            'independent' and 'kronecker', output coordinates for 'cartesian'. Must be None for
+            a single-task GP.
         position : np.ndarray, optional
             Current position in the input space. If a cost function is
             provided this position will be taken into account
@@ -418,19 +428,21 @@ class GPOptimizerBase(GP):
             a :py:class:`GPOptimizer` object. The return value is 1d array
             of length V providing 'scores' for each position,
             such that the highest scored point will be measured next.
-            In the single-task case (using :py:meth:`gpcam.GPOptimizer)
+            For a single-task GP
             the following built-in acquisition functions can be used:
             `ucb`,`lcb`,`maximum`,
             `minimum`, `variance`,`expected improvement`,
             `relative information entropy`,`relative information entropy set`,
             `probability of improvement`, `gradient`,`total correlation`,`target probability`,
             `knowledge gradient`, and `noisy expected improvement`.
-            In the multi-task case (using :py:meth:`gpcam.fvGPOptimizer)
+            For a multi-task GP (``y_data`` with several columns, any ``multi_task_mode``)
             the following built-in acquisition functions can be used:
             `variance`, `relative information entropy`,
             `relative information entropy set`, `total correlation`, `ucb`, `lcb`,
             `expected improvement`, `knowledge gradient`, and
-            `noisy expected improvement`.
+            `noisy expected improvement`; `total correlation` is not available for
+            ``multi_task_mode='kronecker'``, where ``n > 1`` uses
+            `relative information entropy` instead.
             In the multi-task case, it is highly recommended to
             deploy a user-defined acquisition function due to the intricate relationship
             of posterior distributions at different points in the output space.
@@ -574,9 +586,11 @@ class GPOptimizerBase(GP):
             new_optimization_bounds = np.vstack([input_set for i in range(n)])
             input_set = new_optimization_bounds
             if acquisition_function != "total correlation" and acquisition_function != "relative information entropy":
-                acquisition_function = "total correlation"
+                # fvgp has no total correlation for Kronecker GPs (it is dense in the data)
+                acquisition_function = "relative information entropy" if self.multi_task_mode == "kronecker" \
+                    else "total correlation"
                 warnings.warn("You specified n>1 and method != 'hgdl' in ask(). The acquisition function "
-                              "has therefore been changed to 'total correlation'.")
+                              f"has therefore been changed to '{acquisition_function}'.")
 
         if acquisition_function == "total correlation" or acquisition_function == "relative information entropy":
             warnings.warn("I set vectorized=False for total corr. or rel. inf. entropy.")
@@ -636,13 +650,15 @@ class GPOptimizerBase(GP):
             where `x` is an element of your search space. The return is a tuple of scalars or vectors (a,b) where
             `a` is a scalar/vector of function evaluations and `b` is a scalar/vector of noise variances.
             Scalar here applies when the function to be optimized is a scalar valued function.
-            Vector here applies when the function to be optimized is a vector valued function.
+            Vector here applies when the function to be optimized is a vector valued function; its
+            noise variances must have the shape ``multi_task_mode`` asks for (one per point for
+            'independent' and 'kronecker', one per point and output for 'cartesian').
         search_space : np.ndarray | list
             In the Euclidean case this should be a 2d np.ndarray of bounds in each direction of the input space.
             In the non-Euclidean case, this should be a list of all candidates.
         x_out : np.ndarray, optional
-            The position indicating where in the output space the acquisition function should be evaluated.
-            This array is of shape (No).
+            The requested outputs of a multi-task GP, all by default: output indices for
+            'independent' and 'kronecker', output coordinates for 'cartesian'.
         hyperparameter_bounds : np.ndarray
             Bound of the hyperparameters for the training. The default will only work for the default kernel.
             Otherwise, please specify bounds for your hyperparameters.
@@ -696,12 +712,9 @@ class GPOptimizerBase(GP):
                                                                             high=search_space[:, 1],
                                                                             size=(10, len(search_space)))
         result = list(map(func, x0))
-        if self.multi_task:
-            len_x_out = len(result[0][0])
-            y = np.asarray(list(map(np.hstack, zip(*result)))).reshape(-1, len_x_out)[0:len(result)]
-            v = np.asarray(list(map(np.hstack, zip(*result)))).reshape(-1, len_x_out)[len(result):]
-        else:
-            y, v = map(np.hstack, zip(*result))
+        # the GP may not exist yet, so the returns tell whether func is vector-valued: (V, No)
+        if np.size(result[0][0]) > 1: y, v = (np.array(r) for r in zip(*result))
+        else: y, v = map(np.hstack, zip(*result))
         self.tell(x=x0, y=y, noise_variances=v, append=False)
         if x_out is None: x_out = self.x_out
         self.train(hyperparameter_bounds=hyperparameter_bounds)
@@ -748,7 +761,7 @@ class GPOptimizerBase(GP):
             gradient_per_direction=self.gradient_per_direction,
             _args=self._args,
             logging=self.logging,
-            multi_task=self.multi_task,
+            _multi_task_mode=self._multi_task_mode,
             x_out=self.x_out,
             gp=self.gp, #True or False (whether initialized, not the object)
             ))
@@ -762,6 +775,10 @@ class GPOptimizerBase(GP):
         # written while the option was still called ram_economy (gpCAM < 8.6)
         if 'gradient_per_direction' not in state:
             state['gradient_per_direction'] = state.pop('ram_economy', False)
+        # written before gpCAM 8.7, when fvGPOptimizer was the multi-task class
+        if '_multi_task_mode' not in state:
+            state['_multi_task_mode'] = "cartesian" if state.get('multi_task', False) else "independent"
+        state.pop('multi_task', None)
         self.__dict__.update(state)
 
 

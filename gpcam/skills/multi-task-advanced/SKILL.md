@@ -1,16 +1,21 @@
 ---
 name: multi-task-advanced
-description: Use for multi-output, vector-valued, or function-valued gpCAM experiments using fvGPOptimizer — useful when a single measurement returns multiple correlated quantities (e.g., spectra, multi-channel detectors).
-gpcam_version: "8.4.x"
-fvgp_version: "4.8.x"
-last_verified: "2026-07-30 (gpCAM d45db2c + issue #55 fix)"
+description: Use for multi-output, vector-valued, or function-valued gpCAM experiments using GPOptimizer with several output columns and multi_task_mode — useful when a single measurement returns multiple correlated quantities (e.g., spectra, multi-channel detectors).
+gpcam_version: "8.7.x"
+fvgp_version: "4.11.x"
+last_verified: "2026-10-28 (gpCAM 8.7.0)"
 ---
 
-# Skill: Multi-Task GPs with fvGPOptimizer
+# Skill: Multi-Task GPs with GPOptimizer
 
-*Verified against gpCAM 8.4.x / fvgp 4.8.x — last checked 2026-07-30 (gpCAM `d45db2c` + the issue #55 fix).*
+*Verified against gpCAM 8.7.x / fvgp 4.11.x — last checked 2026-10-28.*
 
 Design experiments with vector-valued or function-valued outputs using gpCAM's multi-task GP.
+
+**Since gpCAM 8.7 there is one class.** `GPOptimizer` is a multi-task GP whenever `y_data`
+has more than one column. `fvGPOptimizer` is deprecated (`FutureWarning`);
+`GPOptimizer(..., multi_task_mode="cartesian")` is exactly what it did. Never generate new
+code with `fvGPOptimizer`; when you meet it in a user's script, it still runs.
 
 ## When to Use
 
@@ -18,9 +23,23 @@ Design experiments with vector-valued or function-valued outputs using gpCAM's m
 - Multiple correlated outputs (e.g., intensity at different energies)
 - Exploiting correlations between tasks to improve predictions
 
-## Key Concept
+## Choosing `multi_task_mode`
 
-In fvGP, a multi-task GP is a single-task GP over the **Cartesian product** of input space × output space. The output dimension is appended as an extra column to the input.
+`y_data` of shape (V, No) with No > 1 makes a multi-task GP; `multi_task_mode` decides how
+the outputs relate. Name your choice and its tradeoff to the scientist:
+
+| mode | when | kernel sees | noise | missing outputs |
+|---|---|---|---|---|
+| `"independent"` (default) | outputs unrelated, but sharing one kernel and its hyperparameters; cheapest | inputs only, (N, D) | `(V,)`, one per point | no |
+| `"cartesian"` | correlated outputs, any kernel; the classic fvGPOptimizer | `[x, task]` points, (N, D+1) | `(V, No)`, NaN where y is NaN | yes (NaN) |
+| `"kronecker"` | every output measured at every point (spectra, images) and many outputs; learns the output covariance by default | inputs only; returns a list of factors | `(V,)` | no |
+
+`"independent"` cannot exploit correlation between channels — if that is the reason for a
+multi-task GP, use `"cartesian"` (or `"kronecker"` for full grids with many outputs).
+
+## Key Concept (`"cartesian"`)
+
+In `"cartesian"` mode, a multi-task GP is a single-task GP over the **Cartesian product** of input space × output space. The output dimension is appended as an extra column to the input.
 
 For example, with 2D input and 3 output channels, a point looks like:
 ```
@@ -28,29 +47,37 @@ For example, with 2D input and 3 output channels, a point looks like:
 ```
 
 This means your kernel must handle D+1 dimensional inputs, where the last dimension is the task index.
+The data are stored in that form too: `gpo.x_data` is (V·No, D+1), `gpo.y_data` (V·No, 1),
+less the missing outputs, and `get_data()` returns them so.
 
 ## Basic Setup
 
 ```python
 import numpy as np
-from gpcam import fvGPOptimizer
+from gpcam import GPOptimizer
 
 # 100 input points, 5 output channels
 x_data = np.random.uniform(0, 1, (100, 2))  # 2D input
 y_data = np.random.randn(100, 5)             # 5 outputs per point
 
-# Default path — uses a built-in deep kernel, no hyperparameter bounds required:
-gpo = fvGPOptimizer(x_data, y_data)
-gpo.train(max_iter=20)
+# Independent outputs, default kernel on the inputs:
+gpo = GPOptimizer(x_data, y_data)
+gpo.train()
 
-# Custom kernel path — supply init_hyperparameters and hp bounds as with GPOptimizer.
+# Kronecker: a learned 5 x 5 output covariance (coregionalization), defaults from the data:
+gpo = GPOptimizer(x_data, y_data, multi_task_mode="kronecker")
+gpo.train()
+
+# Cartesian with a custom kernel — supply init_hyperparameters and hp bounds.
 # The layout below matches `multi_task_kernel` in "Multi-Task Kernel Design" below:
-# D + 2 hyperparameters for D input dimensions.
-gpo = fvGPOptimizer(
+# D + 2 hyperparameters for D input dimensions. (The default kernel in this mode treats
+# the task index as one more input dimension — fine for tests, rarely for science.)
+gpo = GPOptimizer(
     x_data=x_data,
     y_data=y_data,
     init_hyperparameters=np.ones(4) / 10.0,
     kernel_function=multi_task_kernel,
+    multi_task_mode="cartesian",
 )
 gpo.train(hyperparameter_bounds=np.array([
     [0.01, 100.0],  # hps[0] signal variance
@@ -62,12 +89,17 @@ gpo.train(hyperparameter_bounds=np.array([
 
 ### Predictions and ask — the `x_out` argument
 
-Multi-task prediction methods take `x_out`, an array of task indices you want predictions for:
+Multi-task prediction methods take `x_out`, the outputs you want, all by default: output
+indices for `"independent"` and `"kronecker"`, output coordinates (the task column's values)
+for `"cartesian"` — the integers 0 … No-1 unless you built the task column yourself.
+Results have the same shapes in every mode:
 
 ```python
 # Predict all 5 task outputs at a grid of input points:
-mean = gpo.posterior_mean(x_grid, x_out=np.array([0, 1, 2, 3, 4]))["m(x)"]  # shape (N, 5)
-std  = np.sqrt(gpo.posterior_covariance(x_grid, x_out=np.array([0, 1, 2, 3, 4]))["v(x)"])
+mean = gpo.posterior_mean(x_grid)["m(x)"]                              # shape (N, 5)
+std  = np.sqrt(gpo.posterior_covariance(x_grid, variance_only=True)["v(x)"])   # (N, 5)
+S = gpo.posterior_covariance(x_grid, x_out=np.array([0, 3]))["S"]       # (N, N, 2, 2)
+# S[i, j, t, u] = Cov(f(x_i, t), f(x_j, u)); "S_flat" is (2N, 2N), pair (i, t) at i + N*t
 
 # Ask for the next best input point across all tasks:
 gpo.ask(parameter_bounds, x_out=np.array([0, 1, 2, 3, 4]), n=1)
@@ -78,9 +110,10 @@ gpo.ask(parameter_bounds, x_out=np.array([0, 1]), n=4,
 ```
 
 **Plain `"expected improvement"` with `x_out` assumes the tasks are uncorrelated.** The
-multi-task branch (`gpcam/surrogate_model.py:312-321`) scalarizes to the task-summed
+multi-task branch of `evaluate_gp_acquisition_function` scalarizes to the task-summed
 objective and takes the spread as `sqrt(Σ_t Var[f(x,t)])`, which drops the cross-task
-covariance. It is cheap and coherent but not exact; for correlated tasks — the usual
+covariance. Its incumbent is the best task-summed *posterior mean* at the data points
+(gpCAM ≥ 8.7; before, a missing output made every EI value NaN). It is cheap and coherent but not exact; for correlated tasks — the usual
 reason to fit a multi-task GP at all — prefer KG/NEI below.
 
 **On gpCAM ≤ 8.4.2, do not use plain `"expected improvement"` with `x_out` at all.**
@@ -92,6 +125,8 @@ product-space vector — quantities that aren't comparable, with no error raised
 Choose by what the scientist is doing:
 
 - **Exploring / mapping all channels** → `"relative information entropy set"` or `"variance"`
+  (`"total correlation"` is not available for `"kronecker"`; `ask(n > 1)` uses
+  `"relative information entropy"` there)
 - **Optimizing** → `"knowledge gradient"` or `"noisy expected improvement"`. Both act on
   the same task-summed objective `g(x) = Σ_t f(x, t)` as multi-task
   `"expected improvement"` / `"ucb"`, but build the joint posterior with the exact
@@ -130,7 +165,7 @@ def f(x):
     v = np.full(y.shape, 0.01)
     return (y[0], v[0]) if single else (y, v)
 
-result = fvGPOptimizer().optimize(
+result = GPOptimizer(multi_task_mode="cartesian").optimize(
     func=f,
     x_out=np.array([0, 1]),     # which task indices to treat as outputs
     search_space=np.array([[0., 1.]]),
@@ -186,9 +221,10 @@ hp_bounds = np.array(
     [[0.01, 10.0]] * D +        # hps[1:3] length scales, one per input dim
     [[0.0, 1.0]]                # hps[3]   task correlation  <- index D+1
 )
-gpo = fvGPOptimizer(x_data, y_data,
-                    init_hyperparameters=np.ones(D + 2),
-                    kernel_function=multi_task_kernel)
+gpo = GPOptimizer(x_data, y_data,
+                  init_hyperparameters=np.ones(D + 2),
+                  kernel_function=multi_task_kernel,
+                  multi_task_mode="cartesian")
 gpo.train(hyperparameter_bounds=hp_bounds)
 
 assert len(gpo.hyperparameters) == len(hp_bounds)
@@ -203,12 +239,13 @@ while reading a length scale as a task correlation.
 ## Important Notes
 
 1. **Multi-task acquisition**: Use `"relative information entropy set"` / `"relative information entropy"` / `"variance"` / `"total correlation"` for batch acquisition across tasks. For optimization, `"expected improvement"`, `"knowledge gradient"`, and `"noisy expected improvement"` all work multi-task — they act on the **task-summed** objective `sum_t f(x, t)` (`"noisy expected improvement"` is the one to reach for when measurements are noisy). Pass `x_out=...` to the `ask()` call. Custom callables are supported and often advisable when you care about a specific task or combination rather than the plain sum.
-2. **Missing task observations**: `y_data` can have `np.nan` entries (e.g., task 1 wasn't measured at some x); the corresponding `noise_variances` entry **must also** be `np.nan`. The GP just ignores those entries — no imputation needed.
-3. **Default kernel**: `fvGPOptimizer(x, y)` with no kernel uses a built-in deep kernel that learns its own hyperparameters and doesn't require bounds. If you supply a custom `kernel_function`, you become responsible for the full `init_hyperparameters` + `hyperparameter_bounds` layout.
+2. **Missing task observations** (`"cartesian"` only): `y_data` can have `np.nan` entries (e.g., task 1 wasn't measured at some x); the corresponding `noise_variances` entry **must also** be `np.nan`. The GP just ignores those entries — no imputation needed. `"independent"` and `"kronecker"` reject NaN.
+3. **Default kernel**: `"independent"` uses the anisotropic Matérn on the inputs; `"kronecker"` the coregionalization kernel (a Matérn on the inputs times a learned output covariance), with data-driven defaults and bounds; `"cartesian"` treats the task index as one more input dimension, which is rarely what a scientist wants — write a kernel (below). If you supply a custom `kernel_function`, you become responsible for the full `init_hyperparameters` + `hyperparameter_bounds` layout.
 4. **Deep kernel via NN warping**: For harder multi-task structure, `from gpcam.deep_kernel_network import Network` gives you an MLP you parametrize from `hps` — see the `kernel-designer` skill for the pattern.
 
 ## Common Pitfalls
 
-1. **Forgetting the task dimension**: The kernel sees D+1 columns, not D.
-2. **Noise shape**: `noise_variances` is shape `(N, No)` for multi-task, not `(N,)`.
-3. **Scaling**: N data points × No outputs = N×No rows in the internal GP. Gets large fast.
+1. **Forgetting the task dimension** (`"cartesian"`): the kernel sees D+1 columns, not D. A kernel written for `[x, task]` points under the default `"independent"` mode gets D columns and fails or silently misreads them — pass `multi_task_mode="cartesian"`.
+2. **Noise shape**: `noise_variances` is `(N, No)` for `"cartesian"`, `(N,)` for `"independent"` and `"kronecker"` (one variance per point, shared by the outputs).
+3. **Scaling**: `"cartesian"` makes N data points × No outputs = N×No rows in the internal GP. Gets large fast; `"kronecker"` is the way out on full grids.
+4. **A single column is single-task**: `y_data` of shape (V, 1) is a single-task GP in every mode (fvGPOptimizer before 8.7 made it a one-task Cartesian GP).

@@ -195,7 +195,8 @@ result = gpo.ask(input_set=parameter_bounds, n=5,
 
 ## 8. Multi-task — "each measurement returns a spectrum"
 
-Use `fvGPOptimizer` with `x_out`.
+Use `GPOptimizer` with `y_data` of shape (V, No) and a `multi_task_mode` (see the
+`multi-task-advanced` skill), and `x_out` to pick outputs.
 
 **Ask back:** *"Are you mapping all the channels, or optimizing something derived from
 them?"*
